@@ -1,0 +1,168 @@
+# 🐳 Docker Compose for ML Fraud Detection API Development
+# ========================================================
+
+version: '3.8'
+
+services:
+  # 🛡️ ML Fraud Detection API
+  fraud-detection-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fraud-detection-api
+    ports:
+      - "8000:8000"  # API
+      - "9090:9090"  # Metrics
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+      - MODEL_NAME=fraud_detection_yandex_model
+      - MODEL_ALIAS=champion
+      - ENABLE_METRICS=true
+    volumes:
+      - ./app:/app/app:ro
+      - ./tests:/app/tests:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - mlflow
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # 🤖 MLflow Server (для разработки)
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow-server
+    ports:
+      - "5001:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=sqlite:///mlflow.db
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    command: >
+      bash -c "
+        pip install mlflow==2.8.1 &&
+        mlflow server 
+          --backend-store-uri sqlite:///mlflow/mlflow.db
+          --default-artifact-root /mlflow/artifacts
+          --host 0.0.0.0
+          --port 5000
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # 📊 Prometheus (для метрик)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # 📈 Grafana (для дашбордов)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - ml-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # 🧪 Test Runner (для CI/CD)
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder  # Используем builder stage с dev зависимостями
+    container_name: test-runner
+    volumes:
+      - ./app:/app/app:ro
+      - ./tests:/app/tests:ro
+      - test_reports:/app/reports
+    environment:
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=1
+    command: >
+      bash -c "
+        pip install pytest pytest-asyncio pytest-cov httpx &&
+        pytest tests/ -v 
+          --cov=app 
+          --cov-report=html:/app/reports/htmlcov
+          --cov-report=xml:/app/reports/coverage.xml
+          --junit-xml=/app/reports/pytest.xml
+      "
+    networks:
+      - ml-network
+    profiles:
+      - testing
+
+  # 📦 Load Testing (с Locust)
+  load-tester:
+    image: locustio/locust:latest
+    container_name: load-tester
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./tests/load_test.py:/mnt/locust/locustfile.py:ro
+    environment:
+      - LOCUST_HOST=http://fraud-detection-api:8000
+    networks:
+      - ml-network
+    profiles:
+      - load-testing
+    depends_on:
+      - fraud-detection-api
+
+# 💾 Volumes
+volumes:
+  mlflow_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  test_reports:
+    driver: local
+
+# 🌐 Networks
+networks:
+  ml-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

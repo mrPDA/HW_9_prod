@@ -1,0 +1,386 @@
+# 🌩️ Yandex Cloud Kubernetes Cluster for ML Fraud Detection API
+# ============================================================
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    yandex = {
+      source  = "yandex-cloud/yandex"
+      version = "~> 0.100"
+    }
+  }
+}
+
+provider "yandex" {
+  token     = var.yc_token
+  cloud_id  = var.yc_cloud_id
+  folder_id = var.yc_folder_id
+  zone      = var.zone
+}
+
+# 🗂️ Data sources
+data "yandex_client_config" "client" {}
+
+# 🌐 VPC и сети - используем существующую default сеть
+data "yandex_vpc_network" "k8s_network" {
+  name = "default"
+}
+
+resource "yandex_vpc_subnet" "k8s_subnet" {
+  count = length(var.zones)
+  
+  name           = "${var.cluster_name}-subnet-${var.zones[count.index]}"
+  zone           = var.zones[count.index]
+  network_id     = data.data.yandex_vpc_network.k8s_network.id
+  v4_cidr_blocks = [var.subnet_cidrs[count.index]]
+  
+  route_table_id = yandex_vpc_route_table.k8s_route_table.id
+}
+
+# 🌐 NAT Gateway для внешнего доступа
+resource "yandex_vpc_gateway" "k8s_gateway" {
+  name = "${var.cluster_name}-gateway"
+  shared_egress_gateway {}
+}
+
+resource "yandex_vpc_route_table" "k8s_route_table" {
+  name       = "${var.cluster_name}-route-table"
+  network_id = data.yandex_vpc_network.k8s_network.id
+
+  static_route {
+    destination_prefix = "0.0.0.0/0"
+    gateway_id         = yandex_vpc_gateway.k8s_gateway.id
+  }
+}
+
+# 🔐 Security Groups
+resource "yandex_vpc_security_group" "k8s_cluster_sg" {
+  name       = "${var.cluster_name}-cluster-sg"
+  network_id = data.yandex_vpc_network.k8s_network.id
+
+  ingress {
+    description    = "Health checks"
+    port           = 30080
+    protocol       = "TCP"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description    = "All outbound traffic"
+    port           = -1
+    protocol       = "ANY"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "yandex_vpc_security_group" "k8s_nodes_sg" {
+  name       = "${var.cluster_name}-nodes-sg"
+  network_id = data.yandex_vpc_network.k8s_network.id
+
+  ingress {
+    description    = "HTTP"
+    port           = 80
+    protocol       = "TCP"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description    = "HTTPS"
+    port           = 443
+    protocol       = "TCP"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description    = "NodePort services"
+    from_port      = 30000
+    to_port        = 32767
+    protocol       = "TCP"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description    = "All outbound traffic"
+    port           = -1
+    protocol       = "ANY"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# 👤 Service Account для кластера
+resource "yandex_iam_service_account" "k8s_sa" {
+  name        = "${var.cluster_name}-sa"
+  description = "Service account for K8s cluster ${var.cluster_name}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_sa_editor" {
+  folder_id = data.yandex_client_config.client.folder_id
+  role      = "k8s.clusters.agent"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_sa_vpc_editor" {
+  folder_id = data.yandex_client_config.client.folder_id
+  role      = "vpc.publicAdmin"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_sa_images_puller" {
+  folder_id = data.yandex_client_config.client.folder_id
+  role      = "container-registry.images.puller"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_sa.id}"
+}
+
+# 👥 Service Account для node group
+resource "yandex_iam_service_account" "k8s_nodes_sa" {
+  name        = "${var.cluster_name}-nodes-sa"
+  description = "Service account for K8s nodes ${var.cluster_name}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_nodes_sa_worker" {
+  folder_id = data.yandex_client_config.client.folder_id
+  role      = "k8s.nodes.agent"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_nodes_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_nodes_sa_puller" {
+  folder_id = data.yandex_client_config.client.folder_id
+  role      = "container-registry.images.puller"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_nodes_sa.id}"
+}
+
+# ☸️ Kubernetes Cluster
+resource "yandex_kubernetes_cluster" "k8s_cluster" {
+  name        = var.cluster_name
+  description = "ML Fraud Detection API Kubernetes cluster"
+
+  network_id = data.yandex_vpc_network.k8s_network.id
+
+  master {
+    version = var.k8s_version
+    zonal {
+      zone      = var.zones[0]
+      subnet_id = yandex_vpc_subnet.k8s_subnet[0].id
+    }
+
+    security_group_ids = [yandex_vpc_security_group.k8s_cluster_sg.id]
+
+    public_ip = true
+
+    maintenance_policy {
+      auto_upgrade = true
+
+      maintenance_window {
+        start_time = "02:00"
+        duration   = "4h"
+        day        = "sunday"
+      }
+    }
+
+    master_logging {
+      enabled                = true
+      log_group_id          = yandex_logging_group.k8s_log_group.id
+      kube_apiserver_enabled = true
+      cluster_autoscaler_enabled = true
+      # kube_controller_manager_enabled and kube_scheduler_enabled не поддерживаются в текущей версии провайдера
+    }
+  }
+
+  service_account_id      = yandex_iam_service_account.k8s_sa.id
+  node_service_account_id = yandex_iam_service_account.k8s_nodes_sa.id
+
+  labels = var.labels
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.k8s_sa_editor,
+    yandex_resourcemanager_folder_iam_member.k8s_sa_vpc_editor,
+    yandex_resourcemanager_folder_iam_member.k8s_sa_images_puller,
+    yandex_resourcemanager_folder_iam_member.k8s_nodes_sa_worker,
+    yandex_resourcemanager_folder_iam_member.k8s_nodes_sa_puller,
+  ]
+}
+
+# 🚀 Node Groups
+resource "yandex_kubernetes_node_group" "k8s_node_group" {
+  cluster_id  = yandex_kubernetes_cluster.k8s_cluster.id
+  name        = "${var.cluster_name}-workers"
+  description = "ML API worker nodes"
+  version     = var.k8s_version
+
+  labels = merge(var.labels, {
+    "node-type" = "worker"
+  })
+
+  instance_template {
+    platform_id = "standard-v3"
+
+    network_interface {
+      nat                = true
+      subnet_ids         = yandex_vpc_subnet.k8s_subnet[*].id
+      security_group_ids = [yandex_vpc_security_group.k8s_nodes_sg.id]
+    }
+
+    resources {
+      memory = var.node_memory
+      cores  = var.node_cores
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = var.node_disk_size
+    }
+
+    scheduling_policy {
+      preemptible = var.use_preemptible_nodes
+    }
+
+    container_runtime {
+      type = "containerd"
+    }
+
+    metadata = {
+      ssh-keys = "ubuntu:${var.ssh_public_key}"
+    }
+  }
+
+  scale_policy {
+    auto_scale {
+      min     = var.min_node_count
+      max     = var.max_node_count
+      initial = var.initial_node_count
+    }
+  }
+
+  allocation_policy {
+    dynamic "location" {
+      for_each = var.zones
+      content {
+        zone = location.value
+      }
+    }
+  }
+
+  maintenance_policy {
+    auto_upgrade = true
+    auto_repair  = true
+
+    maintenance_window {
+      start_time = "03:00"
+      duration   = "3h"
+      day        = "sunday"
+    }
+  }
+}
+
+# 📦 Container Registry
+resource "yandex_container_registry" "ml_registry" {
+  name      = "${var.cluster_name}-registry"
+  folder_id = data.yandex_client_config.client.folder_id
+
+  labels = var.labels
+}
+
+resource "yandex_container_registry_iam_binding" "puller" {
+  registry_id = yandex_container_registry.ml_registry.id
+  role        = "container-registry.images.puller"
+
+  members = [
+    "serviceAccount:${yandex_iam_service_account.k8s_nodes_sa.id}",
+  ]
+}
+
+# 📝 Logging
+resource "yandex_logging_group" "k8s_log_group" {
+  name      = "${var.cluster_name}-logs"
+  folder_id = data.yandex_client_config.client.folder_id
+}
+
+# 🏥 Application Load Balancer (для production)
+resource "yandex_alb_target_group" "ml_api_targets" {
+  name = "${var.cluster_name}-targets"
+
+  dynamic "target" {
+    for_each = var.zones
+    content {
+      subnet_id = yandex_vpc_subnet.k8s_subnet[index(var.zones, target.value)].id
+      ip_address = "10.${index(var.zones, target.value) + 1}.0.10"  # Примерные IP
+    }
+  }
+}
+
+resource "yandex_alb_backend_group" "ml_api_backend" {
+  name = "${var.cluster_name}-backend"
+
+  http_backend {
+    name             = "ml-api-backend"
+    weight           = 1
+    port             = 80
+    target_group_ids = [yandex_alb_target_group.ml_api_targets.id]
+
+    load_balancing_config {
+      panic_threshold = 50
+    }
+
+    healthcheck {
+      timeout  = "10s"
+      interval = "2s"
+      http_healthcheck {
+        path = "/health/"
+      }
+    }
+  }
+}
+
+resource "yandex_alb_http_router" "ml_api_router" {
+  name = "${var.cluster_name}-router"
+
+  labels = var.labels
+}
+
+resource "yandex_alb_virtual_host" "ml_api_host" {
+  name           = "ml-api-host"
+  http_router_id = yandex_alb_http_router.ml_api_router.id
+
+  route {
+    name = "ml-api-route"
+    http_route {
+      http_route_action {
+        backend_group_id = yandex_alb_backend_group.ml_api_backend.id
+        timeout          = "30s"
+      }
+    }
+  }
+}
+
+resource "yandex_alb_load_balancer" "ml_api_lb" {
+  name        = "${var.cluster_name}-lb"
+  network_id  = data.yandex_vpc_network.k8s_network.id
+
+  allocation_policy {
+    dynamic "location" {
+      for_each = var.zones
+      content {
+        zone_id   = location.value
+        subnet_id = yandex_vpc_subnet.k8s_subnet[index(var.zones, location.value)].id
+      }
+    }
+  }
+
+  listener {
+    name = "ml-api-listener"
+    endpoint {
+      address {
+        external_ipv4_address {
+        }
+      }
+      ports = [80, 443]
+    }
+    http {
+      handler {
+        http_router_id = yandex_alb_http_router.ml_api_router.id
+      }
+    }
+  }
+
+  labels = var.labels
+}

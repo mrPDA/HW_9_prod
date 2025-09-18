@@ -1,0 +1,107 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fraud-detection-api-ingress
+  namespace: fraud-detection
+  labels:
+    app.kubernetes.io/name: fraud-detection
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Yandex Cloud Application Load Balancer
+    ingress.alb.yc.io/subnets: "your-subnet-id-1,your-subnet-id-2"
+    ingress.alb.yc.io/external-ipv4-address: "auto"
+    ingress.alb.yc.io/group-name: "fraud-detection-alb"
+    
+    # SSL/TLS настройки
+    ingress.alb.yc.io/protocol: "http"  # или "https" если есть сертификат
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # Rate limiting
+    ingress.alb.yc.io/request-timeout: "30s"
+    ingress.alb.yc.io/idle-timeout: "60s"
+    
+    # CORS настройки
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Content-Type, Authorization"
+    
+    # Body size для больших batch запросов
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    
+    # Timeout настройки
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+
+spec:
+  # TLS конфигурация (если используется HTTPS)
+  # tls:
+  # - hosts:
+  #   - fraud-api.yourdomain.com
+  #   secretName: fraud-detection-tls
+  
+  rules:
+  - host: fraud-api.yourdomain.com  # Замените на ваш домен
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: fraud-detection-api-internal
+            port:
+              number: 8000
+      
+      # Отдельный путь для метрик (только внутренний доступ)
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: fraud-detection-api-internal
+            port:
+              number: 9090
+  
+  # Fallback для доступа по IP
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: fraud-detection-api-internal
+            port:
+              number: 8000
+
+---
+# NetworkPolicy для ограничения доступа к метрикам
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-detection-metrics-policy
+  namespace: fraud-detection
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fraud-detection
+      app.kubernetes.io/component: api
+  policyTypes:
+  - Ingress
+  ingress:
+  # Разрешаем доступ к HTTP API от всех
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8000
+  
+  # Разрешаем доступ к метрикам только от Prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090

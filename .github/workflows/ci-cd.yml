@@ -1,0 +1,297 @@
+name: 🚀 ML Fraud Detection CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: cr.yandex
+  IMAGE_NAME: fraud-detection-api
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # 🧪 Testing
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r app/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov httpx
+    
+    - name: 🔍 Lint with flake8
+      run: |
+        pip install flake8
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 app/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: 🧪 Run unit tests
+      run: |
+        export PYTHONPATH="${PYTHONPATH}:${PWD}"
+        pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
+    
+    - name: 📊 Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+    
+    - name: 🔒 Security scan with bandit
+      run: |
+        pip install bandit
+        bandit -r app/ -f json -o security-report.json || true
+    
+    - name: 📋 Upload test artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          htmlcov/
+          security-report.json
+          coverage.xml
+
+  # 🏗️ Build Docker Image
+  build:
+    name: 🐳 Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 🔑 Log in to Yandex Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: json_key
+        password: ${{ secrets.YC_KEY }}
+    
+    - name: 🏷️ Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ secrets.YC_REGISTRY_ID }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: 🏗️ Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+
+  # 🔒 Security Scanning
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - name: 🔍 Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ needs.build.outputs.image-tag }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: 📋 Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # 🚀 Deploy to Staging
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: 🔑 Configure kubectl for Yandex Cloud
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > ~/.kube/config
+        kubectl config use-context staging
+    
+    - name: 🔄 Update deployment image
+      run: |
+        kubectl set image deployment/fraud-detection-api \
+          fraud-detection-api=${{ needs.build.outputs.image-tag }} \
+          -n fraud-detection-staging
+    
+    - name: ⏳ Wait for rollout
+      run: |
+        kubectl rollout status deployment/fraud-detection-api \
+          -n fraud-detection-staging \
+          --timeout=300s
+    
+    - name: 🧪 Run smoke tests
+      run: |
+        # Получаем external IP
+        EXTERNAL_IP=$(kubectl get service fraud-detection-api \
+          -n fraud-detection-staging \
+          -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        # Smoke test
+        curl -f http://$EXTERNAL_IP/health/ || exit 1
+        curl -f http://$EXTERNAL_IP/ || exit 1
+
+  # 🚀 Deploy to Production
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, build, security]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: 🔑 Configure kubectl for Yandex Cloud
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+        kubectl config use-context production
+    
+    - name: 🔄 Update deployment image
+      run: |
+        kubectl set image deployment/fraud-detection-api \
+          fraud-detection-api=${{ needs.build.outputs.image-tag }} \
+          -n fraud-detection
+    
+    - name: ⏳ Wait for rollout
+      run: |
+        kubectl rollout status deployment/fraud-detection-api \
+          -n fraud-detection \
+          --timeout=600s
+    
+    - name: 🧪 Run production smoke tests
+      run: |
+        # Получаем external IP
+        EXTERNAL_IP=$(kubectl get service fraud-detection-api \
+          -n fraud-detection \
+          -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        # Production smoke tests
+        curl -f http://$EXTERNAL_IP/health/ || exit 1
+        curl -f http://$EXTERNAL_IP/health/ready || exit 1
+        
+        # Test prediction endpoint
+        curl -X POST http://$EXTERNAL_IP/predict \
+          -H "Content-Type: application/json" \
+          -d '{
+            "transaction_id": "test_001",
+            "amount": 100.0,
+            "merchant_category": "restaurant",
+            "hour_of_day": 14,
+            "day_of_week": 2
+          }' || exit 1
+    
+    - name: 📝 Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          🚀 **ML Fraud Detection API Release**
+          
+          **Docker Image:** `${{ needs.build.outputs.image-tag }}`
+          **Image Digest:** `${{ needs.build.outputs.image-digest }}`
+          
+          **Changes:**
+          - Auto-generated from tag push
+          
+          **Deployment:**
+          - ✅ Production deployment successful
+          - ✅ Smoke tests passed
+          
+          **Links:**
+          - 📊 [Monitoring Dashboard](https://monitoring.yourdomain.com)
+          - 📖 [API Documentation](https://fraud-api.yourdomain.com/docs)
+        draft: false
+        prerelease: false
+
+  # 📋 Notify
+  notify:
+    name: 📢 Notify Teams
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: always()
+    
+    steps:
+    - name: 📢 Slack Notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#ml-deployments'
+        text: |
+          🚀 *ML Fraud Detection API Deployment*
+          
+          *Status:* ${{ job.status }}
+          *Branch:* ${{ github.ref }}
+          *Commit:* ${{ github.sha }}
+          *Actor:* ${{ github.actor }}
+          
+          *Image:* `${{ needs.build.outputs.image-tag }}`
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

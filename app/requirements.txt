@@ -1,0 +1,38 @@
+# 🚀 ML Fraud Detection API Requirements
+# =====================================
+
+# 🌐 Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+
+# 🤖 Machine Learning
+mlflow==2.8.1
+scikit-learn==1.3.2
+pandas==2.1.4
+numpy==1.25.2
+joblib==1.3.2
+
+# 📊 Monitoring & Metrics
+prometheus-client==0.19.0
+psutil==5.9.6
+
+# 📝 Logging
+structlog==23.2.0
+
+# 🔧 Utilities
+python-dotenv==1.0.0
+httpx==0.25.2
+aiofiles==23.2.1
+
+# 🧪 Development & Testing (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+pytest-cov==4.1.0
+
+# 📦 Production Optimizations
+gunicorn==21.2.0
+orjson==3.9.10

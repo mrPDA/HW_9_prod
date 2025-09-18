@@ -1,0 +1,294 @@
+#cloud-config
+# MLflow Server Cloud-Init Configuration
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - python3
+  - python3-pip
+  - python3-dev
+  - python3-venv
+  - postgresql-client
+  - nginx
+  - supervisor
+  - curl
+  - wget
+  - git
+
+users:
+  - name: mlflow
+    sudo: false
+    shell: /bin/bash
+  - name: ubuntu
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    lock_passwd: false
+    ssh_authorized_keys:
+      - ${ssh_public_key}exit
+
+# Дополнительная конфигурация SSH
+ssh_pwauth: false
+disable_root: true
+
+write_files:
+  # MLflow systemd service с fallback режимом
+  - path: /etc/systemd/system/mlflow.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=MLflow Tracking Server
+      After=network.target
+      
+      [Service]
+      Type=simple
+      User=ubuntu
+      Group=ubuntu
+      WorkingDirectory=/home/ubuntu
+      Environment=PATH=/usr/local/bin:/usr/bin:/bin
+      Environment=AWS_ACCESS_KEY_ID=${s3_access_key}
+      Environment=AWS_SECRET_ACCESS_KEY=${s3_secret_key}
+      Environment=AWS_DEFAULT_REGION=ru-central1
+      Environment=AWS_ENDPOINT_URL=${s3_endpoint_url}
+      Environment=MLFLOW_S3_ENDPOINT_URL=${s3_endpoint_url}
+      ExecStart=/home/ubuntu/start_mlflow.sh
+      Restart=always
+      RestartSec=10
+      
+      [Install]
+      WantedBy=multi-user.target
+
+  # Скрипт запуска MLflow с fallback
+  - path: /home/ubuntu/start_mlflow.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      
+      # Устанавливаем переменные окружения для S3
+      export AWS_ACCESS_KEY_ID="${s3_access_key}"
+      export AWS_SECRET_ACCESS_KEY="${s3_secret_key}"
+      export AWS_DEFAULT_REGION="ru-central1"
+      export AWS_ENDPOINT_URL="${s3_endpoint_url}"
+      export MLFLOW_S3_ENDPOINT_URL="${s3_endpoint_url}"
+      
+      # URL-кодируем пароль для PostgreSQL
+      ENCODED_PASSWORD=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${postgresql_password}', safe=''))")
+      
+      # Проверяем доступность PostgreSQL (таймаут 30 сек)
+      echo "Testing PostgreSQL connectivity to ${postgresql_host}:${postgresql_port}..."
+      if timeout 30 bash -c "</dev/tcp/${postgresql_host}/${postgresql_port}" 2>/dev/null; then
+        echo "PostgreSQL available - using PostgreSQL backend"
+        exec mlflow server \
+          --backend-store-uri "postgresql://${postgresql_user}:$ENCODED_PASSWORD@${postgresql_host}:${postgresql_port}/${postgresql_database}" \
+          --default-artifact-root "s3://${s3_bucket}/mlflow-artifacts/" \
+          --host 0.0.0.0 \
+          --port 5000
+      else
+        echo "PostgreSQL unavailable - using SQLite fallback"
+        exec mlflow server \
+          --backend-store-uri "sqlite:////var/lib/mlflow/mlflow.db" \
+          --default-artifact-root "s3://${s3_bucket}/mlflow-artifacts/" \
+          --host 0.0.0.0 \
+          --port 5000
+      fi
+
+  # Nginx конфигурация для reverse proxy
+  - path: /etc/nginx/sites-available/mlflow
+    permissions: '0644'
+    content: |
+      server {
+          listen 80;
+          server_name _;
+          
+          location / {
+              proxy_pass http://127.0.0.1:5000;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              
+              # WebSocket support для MLflow UI
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection "upgrade";
+          }
+      }
+
+
+
+runcmd:
+  # Устанавливаем MLflow и зависимости
+  - apt update -qq
+  - apt install -y python3-pip python3-dev build-essential libpq-dev
+  # Исправляем конфликт blinker (как при ручной установке)
+  - pip3 install --ignore-installed blinker==1.8.2
+  # Устанавливаем MLflow глобально
+  - pip3 install mlflow psycopg2-binary boto3
+  
+  # Создаем директорию для MLflow данных и настраиваем права
+  - mkdir -p /var/lib/mlflow
+  - chown ubuntu:ubuntu /var/lib/mlflow
+  
+  # Настраиваем права на MLflow скрипт (исправляем проблему с write_files)
+  - chown ubuntu:ubuntu /home/ubuntu/start_mlflow.sh
+  - chmod +x /home/ubuntu/start_mlflow.sh
+  
+  # Проверяем установку MLflow
+  - |
+    echo "=== Проверка установки MLflow ==="
+    python3 -c "import mlflow; print('MLflow version:', mlflow.__version__)" || {
+      echo "❌ MLflow не установлен, пробуем переустановку..."
+      pip3 install --force-reinstall mlflow psycopg2-binary boto3
+      python3 -c "import mlflow; print('MLflow version:', mlflow.__version__)" || {
+        echo "❌ Критическая ошибка: MLflow не удалось установить"
+        exit 1
+      }
+    }
+    echo "✅ MLflow успешно установлен!"
+  
+  # Настраиваем nginx
+  - rm -f /etc/nginx/sites-enabled/default
+  - ln -sf /etc/nginx/sites-available/mlflow /etc/nginx/sites-enabled/mlflow
+  - systemctl reload nginx
+  - systemctl enable nginx
+  
+  # Тестируем подключение к базе данных (с таймаутом)
+  - |
+    echo "=== MLflow PostgreSQL Connection Test ==="
+    echo "Host: ${postgresql_host}"
+    echo "Port: ${postgresql_port}"
+    echo "User: ${postgresql_user}"
+    echo "Database: ${postgresql_database}"
+    echo "Testing PostgreSQL connection (with timeout)..."
+    
+    export PGPASSWORD="${postgresql_password}"
+    retries=0
+    max_retries=6  # 30 секунд общий таймаут
+    while [ $retries -lt $max_retries ]; do
+      echo "Attempt $((retries+1))/$max_retries: Testing connection..."
+      if pg_isready -h ${postgresql_host} -p ${postgresql_port} -U ${postgresql_user} -d ${postgresql_database} -t 5; then
+        echo "✅ PostgreSQL is ready!"
+        
+        # Проверяем подключение с аутентификацией
+        if psql -h ${postgresql_host} -p ${postgresql_port} -U ${postgresql_user} -d ${postgresql_database} -c "SELECT 1;" > /dev/null 2>&1; then
+          echo "✅ PostgreSQL authentication successful!"
+        else
+          echo "⚠️ PostgreSQL connection test failed, but server is ready"
+        fi
+        break
+      fi
+      retries=$((retries+1))
+      echo "❌ PostgreSQL not ready yet... (attempt $retries/$max_retries)"
+      sleep 5
+    done
+    
+    if [ $retries -eq $max_retries ]; then
+      echo "❌ PostgreSQL timeout - MLflow will use SQLite fallback"
+    fi
+  
+  # Проверяем создание скрипта запуска (исправленная версия)
+  - |
+    echo "=== Проверка скрипта запуска MLflow ==="
+    if [ ! -f /home/ubuntu/start_mlflow.sh ]; then
+      echo "❌ Скрипт start_mlflow.sh не найден, создаем вручную..."
+      cat > /home/ubuntu/start_mlflow.sh << 'EOF_SCRIPT'
+    #!/bin/bash
+    set -e
+    
+    # Устанавливаем переменные окружения для S3
+    export AWS_ACCESS_KEY_ID="${s3_access_key}"
+    export AWS_SECRET_ACCESS_KEY="${s3_secret_key}"
+    export AWS_DEFAULT_REGION="ru-central1"
+    export AWS_ENDPOINT_URL="${s3_endpoint_url}"
+    export MLFLOW_S3_ENDPOINT_URL="${s3_endpoint_url}"
+    
+    # URL-кодируем пароль для PostgreSQL
+    ENCODED_PASSWORD=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${postgresql_password}', safe=''))")
+    
+    # Проверяем доступность PostgreSQL (таймаут 30 сек)
+    echo "Testing PostgreSQL connectivity to ${postgresql_host}:${postgresql_port}..."
+    if timeout 30 bash -c "</dev/tcp/${postgresql_host}/${postgresql_port}" 2>/dev/null; then
+      echo "PostgreSQL available - using PostgreSQL backend"
+      exec mlflow server \
+        --backend-store-uri "postgresql://${postgresql_user}:$ENCODED_PASSWORD@${postgresql_host}:${postgresql_port}/${postgresql_database}" \
+        --default-artifact-root "s3://${s3_bucket}/mlflow-artifacts/" \
+        --host 0.0.0.0 \
+        --port 5000
+    else
+      echo "PostgreSQL unavailable - using SQLite fallback"
+      exec mlflow server \
+        --backend-store-uri "sqlite:////var/lib/mlflow/mlflow.db" \
+        --default-artifact-root "s3://${s3_bucket}/mlflow-artifacts/" \
+        --host 0.0.0.0 \
+        --port 5000
+    fi
+    EOF_SCRIPT
+      chmod +x /home/ubuntu/start_mlflow.sh
+      chown ubuntu:ubuntu /home/ubuntu/start_mlflow.sh
+      echo "✅ Скрипт создан вручную"
+    else
+      echo "✅ Скрипт start_mlflow.sh найден"
+    fi
+    
+  # Запускаем MLflow service (всегда запускается, даже если PostgreSQL недоступен)
+  - systemctl daemon-reload
+  - systemctl enable mlflow
+  - systemctl start mlflow
+  
+  # Ждем запуска MLflow и настраиваем мониторинг
+  - |
+    echo "Waiting for MLflow to start..."
+    sleep 30
+    retries=0
+    max_retries=12
+    until curl -f http://localhost:5000/health || [ $retries -eq $max_retries ]; do
+      echo "Waiting for MLflow UI to be ready... (attempt $((retries+1))/$max_retries)"
+      sleep 10
+      retries=$((retries+1))
+    done
+    
+    if [ $retries -eq $max_retries ]; then
+      echo "MLflow failed to start, checking logs..."
+      journalctl -u mlflow --no-pager -l
+      systemctl restart mlflow
+      sleep 30
+    fi
+    
+    echo "MLflow is ready!"
+  
+  # Создаем скрипт для мониторинга здоровья MLflow
+  - |
+    cat > /usr/local/bin/mlflow-health-check.sh << 'EOF'
+    #!/bin/bash
+    if ! curl -f http://localhost:5000/health > /dev/null 2>&1; then
+      echo "$(date): MLflow healthcheck failed, restarting service"
+      systemctl restart mlflow
+      sleep 30
+      if ! curl -f http://localhost:5000/health > /dev/null 2>&1; then
+        echo "$(date): MLflow restart failed, manual intervention required"
+      else
+        echo "$(date): MLflow restarted successfully"
+      fi
+    fi
+    EOF
+    chmod +x /usr/local/bin/mlflow-health-check.sh
+  
+  # Добавляем cron job для периодической проверки
+  - echo "*/5 * * * * root /usr/local/bin/mlflow-health-check.sh >> /var/log/mlflow-health.log 2>&1" >> /etc/crontab
+
+final_message: |
+  MLflow server has been successfully installed and configured!
+  
+  Access MLflow UI at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):5000
+  
+  MLflow configuration:
+  - Backend store: PostgreSQL database (with SQLite fallback)
+  - Artifact store: S3 bucket (${s3_bucket}/mlflow-artifacts/)
+  - Host: 0.0.0.0:5000
+  - Auto-restart: Enabled with health checks
+  
+  Logs:
+  - MLflow service: sudo journalctl -u mlflow -f
+  - MLflow install: /var/log/cloud-init-output.log
+  - Health checks: /var/log/mlflow-health.log

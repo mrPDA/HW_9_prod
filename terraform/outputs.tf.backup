@@ -1,0 +1,175 @@
+# 📤 Outputs for ML Fraud Detection K8s Infrastructure
+# ===================================================
+
+# ☸️ Cluster Information
+output "cluster_id" {
+  description = "ID of the Kubernetes cluster"
+  value       = yandex_kubernetes_cluster.k8s_cluster.id
+}
+
+output "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  value       = yandex_kubernetes_cluster.k8s_cluster.name
+}
+
+output "cluster_endpoint" {
+  description = "Kubernetes cluster API endpoint"
+  value       = yandex_kubernetes_cluster.k8s_cluster.master[0].external_v4_endpoint
+  sensitive   = true
+}
+
+output "cluster_ca_certificate" {
+  description = "Kubernetes cluster CA certificate"
+  value       = yandex_kubernetes_cluster.k8s_cluster.master[0].cluster_ca_certificate
+  sensitive   = true
+}
+
+# 🌐 Network Information
+output "network_id" {
+  description = "ID of the VPC network"
+  value       = data.yandex_vpc_network.k8s_network.id
+}
+
+output "subnet_ids" {
+  description = "IDs of the subnets"
+  value       = yandex_vpc_subnet.k8s_subnet[*].id
+}
+
+output "security_group_ids" {
+  description = "Security group IDs"
+  value = {
+    cluster = yandex_vpc_security_group.k8s_cluster_sg.id
+    nodes   = yandex_vpc_security_group.k8s_nodes_sg.id
+  }
+}
+
+# 👥 Service Accounts
+output "cluster_service_account_id" {
+  description = "Service account ID for the cluster"
+  value       = yandex_iam_service_account.k8s_sa.id
+}
+
+output "nodes_service_account_id" {
+  description = "Service account ID for the nodes"
+  value       = yandex_iam_service_account.k8s_nodes_sa.id
+}
+
+# 🚀 Node Group Information
+output "node_group_id" {
+  description = "ID of the node group"
+  value       = yandex_kubernetes_node_group.k8s_node_group.id
+}
+
+output "node_group_status" {
+  description = "Status of the node group"
+  value       = yandex_kubernetes_node_group.k8s_node_group.status
+}
+
+# 📦 Container Registry
+output "registry_id" {
+  description = "Container registry ID"
+  value       = yandex_container_registry.ml_registry.id
+}
+
+output "registry_name" {
+  description = "Container registry name"
+  value       = yandex_container_registry.ml_registry.name
+}
+
+output "registry_endpoint" {
+  description = "Container registry endpoint"
+  value       = "cr.yandex/${yandex_container_registry.ml_registry.id}"
+}
+
+# 🏥 Load Balancer
+output "load_balancer_ip" {
+  description = "External IP address of the Application Load Balancer"
+  value       = try(yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address, "")
+}
+
+output "load_balancer_id" {
+  description = "Application Load Balancer ID"
+  value       = yandex_alb_load_balancer.ml_api_lb.id
+}
+
+# 📝 Logging
+output "log_group_id" {
+  description = "Log group ID for cluster logs"
+  value       = yandex_logging_group.k8s_log_group.id
+}
+
+# 🔑 kubectl Configuration
+output "kubectl_config" {
+  description = "kubectl configuration command"
+  value = format(
+    "yc managed-kubernetes cluster get-credentials %s --external",
+    yandex_kubernetes_cluster.k8s_cluster.name
+  )
+  sensitive = true
+}
+
+# 🐳 Docker Commands
+output "docker_login_command" {
+  description = "Command to login to Yandex Container Registry"
+  value = format(
+    "yc container registry configure-docker",
+  )
+}
+
+output "docker_push_commands" {
+  description = "Commands to build and push ML API image"
+  value = {
+    build = "docker build -t fraud-detection-api:latest ."
+    tag   = format("docker tag fraud-detection-api:latest cr.yandex/%s/fraud-detection-api:latest", yandex_container_registry.ml_registry.id)
+    push  = format("docker push cr.yandex/%s/fraud-detection-api:latest", yandex_container_registry.ml_registry.id)
+  }
+}
+
+# 🚀 Deployment Information
+output "deployment_info" {
+  description = "Information for deploying the ML API"
+  value = {
+    cluster_name     = yandex_kubernetes_cluster.k8s_cluster.name
+    registry_id      = yandex_container_registry.ml_registry.id
+    image_repository = "cr.yandex/${yandex_container_registry.ml_registry.id}/fraud-detection-api"
+    namespace        = "fraud-detection"
+    service_name     = "fraud-detection-api"
+  }
+}
+
+# 🌍 Environment URLs
+output "api_endpoints" {
+  description = "API endpoint URLs"
+  value = {
+    external_lb = try("http://${yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address}", "")
+    health_check = try("http://${yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address}/health/", "")
+    api_docs = try("http://${yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address}/docs", "")
+    metrics = try("http://${yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address}/metrics/", "")
+  }
+}
+
+# 💰 Cost Information
+output "estimated_monthly_cost" {
+  description = "Estimated monthly cost breakdown (approximate)"
+  value = {
+    cluster_master = "~$30-50/month"
+    worker_nodes   = "~$${var.initial_node_count * var.node_cores * 15}/month (${var.initial_node_count} nodes)"
+    load_balancer  = "~$15-25/month"
+    registry       = "~$5-10/month"
+    total_estimate = "~$${50 + var.initial_node_count * var.node_cores * 15 + 20 + 7}/month"
+  }
+}
+
+# 📋 Next Steps
+output "next_steps" {
+  description = "Next steps for deployment"
+  value = [
+    "1. Configure kubectl: ${format("yc managed-kubernetes cluster get-credentials %s --external", yandex_kubernetes_cluster.k8s_cluster.name)}",
+    "2. Configure Docker: yc container registry configure-docker",
+    "3. Build and push image: docker build -t fraud-detection-api . && docker tag fraud-detection-api cr.yandex/${yandex_container_registry.ml_registry.id}/fraud-detection-api:latest && docker push cr.yandex/${yandex_container_registry.ml_registry.id}/fraud-detection-api:latest",
+    "4. Update k8s/deployment.yaml image: cr.yandex/${yandex_container_registry.ml_registry.id}/fraud-detection-api:latest",
+    "5. Deploy to cluster: kubectl apply -f k8s/",
+    "6. Check status: kubectl get pods -n fraud-detection",
+    "7. Test API: curl http://${try(yandex_alb_load_balancer.ml_api_lb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address, "PENDING")}/health/"
+  ]
+}

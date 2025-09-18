@@ -1,0 +1,228 @@
+# 📝 Variables for ML Fraud Detection K8s Infrastructure
+# =====================================================
+
+# 🔐 Yandex Cloud Authentication
+variable "yc_token" {
+  description = "Yandex Cloud IAM token"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "yc_cloud_id" {
+  description = "Yandex Cloud ID"
+  type        = string
+  default     = ""
+}
+
+variable "yc_folder_id" {
+  description = "Yandex Cloud Folder ID"
+  type        = string
+  default     = ""
+}
+
+variable "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  type        = string
+  default     = "ml-fraud-detection"
+}
+
+variable "zone" {
+  description = "Yandex Cloud zone"
+  type        = string
+  default     = "ru-central1-a"
+}
+
+variable "zones" {
+  description = "List of availability zones for multi-zone cluster"
+  type        = list(string)
+  default     = ["ru-central1-a", "ru-central1-b", "ru-central1-d"]
+}
+
+variable "subnet_cidrs" {
+  description = "CIDR blocks for subnets"
+  type        = list(string)
+  default     = ["10.1.0.0/24", "10.2.0.0/24", "10.3.0.0/24"]
+}
+
+variable "k8s_version" {
+  description = "Kubernetes version"
+  type        = string
+  default     = "1.28"
+}
+
+# 🚀 Node Configuration
+variable "node_cores" {
+  description = "Number of CPU cores for worker nodes"
+  type        = number
+  default     = 2
+}
+
+variable "node_memory" {
+  description = "Amount of RAM for worker nodes (GB)"
+  type        = number
+  default     = 4
+}
+
+variable "node_disk_size" {
+  description = "Boot disk size for worker nodes (GB)"
+  type        = number
+  default     = 64
+}
+
+variable "use_preemptible_nodes" {
+  description = "Use preemptible (cheaper) nodes"
+  type        = bool
+  default     = false
+}
+
+# 📈 Scaling Configuration
+variable "initial_node_count" {
+  description = "Initial number of nodes in the cluster"
+  type        = number
+  default     = 3
+}
+
+variable "min_node_count" {
+  description = "Minimum number of nodes in auto-scaling group"
+  type        = number
+  default     = 1
+}
+
+variable "max_node_count" {
+  description = "Maximum number of nodes in auto-scaling group"
+  type        = number
+  default     = 10
+}
+
+# 🔐 Security
+variable "ssh_public_key" {
+  description = "SSH public key for node access"
+  type        = string
+  default     = ""
+}
+
+# 🏷️ Labeling
+variable "labels" {
+  description = "Labels to apply to all resources"
+  type        = map(string)
+  default = {
+    project     = "ml-fraud-detection"
+    environment = "production"
+    managed-by  = "terraform"
+    team        = "ml-team"
+  }
+}
+
+# 🌐 Network Configuration
+variable "enable_nat_gateway" {
+  description = "Enable NAT gateway for outbound internet access"
+  type        = bool
+  default     = true
+}
+
+# 📊 Monitoring
+variable "enable_cluster_logging" {
+  description = "Enable cluster audit logging"
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "Number of days to retain logs"
+  type        = number
+  default     = 30
+}
+
+# 💰 Cost Optimization
+variable "auto_scaling_enabled" {
+  description = "Enable cluster auto-scaling"
+  type        = bool
+  default     = true
+}
+
+variable "spot_instances_enabled" {
+  description = "Use spot instances for cost savings"
+  type        = bool
+  default     = false
+}
+
+# 🔧 Advanced Configuration
+variable "container_runtime" {
+  description = "Container runtime (containerd or docker)"
+  type        = string
+  default     = "containerd"
+  
+  validation {
+    condition     = contains(["containerd", "docker"], var.container_runtime)
+    error_message = "Container runtime must be either 'containerd' or 'docker'."
+  }
+}
+
+variable "network_policy_provider" {
+  description = "Network policy provider (calico or cilium)"
+  type        = string
+  default     = "calico"
+  
+  validation {
+    condition     = contains(["calico", "cilium"], var.network_policy_provider)
+    error_message = "Network policy provider must be either 'calico' or 'cilium'."
+  }
+}
+
+# 🛡️ Security Hardening
+variable "enable_pod_security_policy" {
+  description = "Enable Pod Security Policy"
+  type        = bool
+  default     = true
+}
+
+variable "enable_network_policy" {
+  description = "Enable network policies for pod-to-pod communication"
+  type        = bool
+  default     = true
+}
+
+variable "restrict_public_access" {
+  description = "Restrict public access to cluster API"
+  type        = bool
+  default     = false
+}
+
+# 📦 Registry Configuration
+variable "registry_name" {
+  description = "Name for the container registry"
+  type        = string
+  default     = ""
+}
+
+variable "enable_vulnerability_scanning" {
+  description = "Enable vulnerability scanning for container images"
+  type        = bool
+  default     = true
+}
+
+# 🔄 Maintenance Windows
+variable "maintenance_window_start" {
+  description = "Maintenance window start time (HH:MM)"
+  type        = string
+  default     = "02:00"
+}
+
+variable "maintenance_window_day" {
+  description = "Day of the week for maintenance"
+  type        = string
+  default     = "sunday"
+}
+
+variable "auto_upgrade_enabled" {
+  description = "Enable automatic cluster upgrades"
+  type        = bool
+  default     = true
+}
+
+variable "auto_repair_enabled" {
+  description = "Enable automatic node repair"
+  type        = bool
+  default     = true
+}
