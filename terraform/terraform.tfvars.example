@@ -1,0 +1,35 @@
+# 🌩️ Пример конфигурации Terraform для Yandex Cloud
+# Скопируйте этот файл в terraform.tfvars и заполните своими значениями
+
+# Аутентификация Yandex Cloud
+yc_token    = "your_yandex_cloud_iam_token_here"
+yc_cloud_id = "your_cloud_id_here"
+yc_folder_id = "your_folder_id_here"
+
+# Конфигурация кластера
+cluster_name = "ml-fraud-detection-demo"
+k8s_version = "1.32"
+
+# Настройки узлов
+node_count = 2
+node_cores = 2
+node_memory = 4
+node_disk_size = 32
+node_disk_type = "network-hdd"
+
+# Сеть
+network_name = "default"
+subnet_name = "default-ru-central1-a"
+
+# Container Registry
+registry_name = "ml-fraud-detection-demo-registry"
+
+# Теги для ресурсов
+environment = "demo"
+project = "ml-fraud-detection"
+
+# Примечания:
+# 1. Получите IAM токен: yc iam create-token
+# 2. Узнайте cloud_id: yc config get cloud-id
+# 3. Узнайте folder_id: yc config get folder-id
+# 4. Убедитесь что у вас есть права на создание ресурсов

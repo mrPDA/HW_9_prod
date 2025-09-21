@@ -102,3 +102,48 @@ yarn-error.log*
 tmp/
 temp/
 .tmp/
+
+# Backup directory
+../otus_airflow_dag_second_cop_backup/
+backup/
+*_backup/
+
+# 🔒 Security & Secrets (критично для публичного репозитория)
+# Приватные ключи и токены
+*.key
+*.pem
+*_key.json
+*-key.json
+github-actions-key.json
+service-account-key.json
+
+# Kubeconfig файлы
+kubeconfig*.yaml
+kubeconfig*.yml
+*kubeconfig*
+
+# Terraform state (содержит чувствительные данные)
+terraform.tfstate*
+*.tfstate*
+.terraform/
+terraform.tfvars
+terraform.tfvars.json
+
+# Cloud credentials
+.aws/
+.gcp/
+.yandex/
+*credentials*
+*auth*
+
+# Переменные окружения с секретами
+.env.local
+.env.production
+.env.staging
+.env.secrets
+
+# SSH ключи
+id_rsa*
+id_ed25519*
+ssh_host_*
+authorized_keys

@@ -18,7 +18,8 @@ install: ## Install Python dependencies
 install-dev: ## Install development dependencies
 	@echo "📦 Installing development dependencies..."
 	pip install -r app/requirements.txt
-	pip install pytest pytest-asyncio pytest-cov httpx black isort flake8 bandit locust
+	pip install -r tests/requirements.txt
+	pip install black isort flake8 bandit
 
 # 🧪 Testing
 test: ## Run unit tests
@@ -36,6 +37,29 @@ test-api: ## Test only API endpoints
 test-model: ## Test only ML model
 	@echo "🧪 Testing ML model..."
 	PYTHONPATH=${PWD} pytest tests/test_model.py -v
+
+# 🚀 API Testing (новые команды)
+test-api-public: ## Комплексное тестирование публичного API
+	@echo "🧪 Running comprehensive API tests..."
+	cd tests && python run_api_tests.py --url http://localhost:8000
+
+test-api-local: ## Тестирование локального API с запуском
+	@echo "🚀 Starting API and running tests..."
+	cd app && python -m uvicorn main:app --host 0.0.0.0 --port 8000 & \
+	sleep 10 && \
+	cd tests && python run_api_tests.py --url http://localhost:8000 --quick
+
+test-api-performance: ## Тестирование производительности API
+	@echo "📈 Running performance tests..."
+	cd tests && python load_test.py --url http://localhost:8000 --users 10 --duration 30
+
+test-api-security: ## Тестирование безопасности API  
+	@echo "🔒 Running security tests..."
+	cd tests && python run_api_tests.py --url http://localhost:8000 --no-performance
+
+test-api-reports: ## Генерация отчетов о тестировании
+	@echo "📊 Generating API test reports..."
+	cd tests && python run_api_tests.py --url http://localhost:8000 --output-dir ../test_results
 
 # 🔍 Code Quality
 lint: ## Run code linting

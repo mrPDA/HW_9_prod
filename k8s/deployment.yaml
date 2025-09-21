@@ -31,7 +31,7 @@ spec:
     spec:
       containers:
       - name: fraud-detection-api
-        image: cr.yandex/crptv4gc9kktat18e7ts/fraud-detection-api:latest
+        image: cr.yandex/YOUR_REGISTRY_ID/fraud-detection-api:latest
         imagePullPolicy: Always
         ports:
         - name: http

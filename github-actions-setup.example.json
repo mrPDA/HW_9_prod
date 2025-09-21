@@ -1,0 +1,26 @@
+{
+  "description": "Пример конфигурации сервисного аккаунта для GitHub Actions",
+  "warning": "НЕ ДОБАВЛЯЙТЕ РЕАЛЬНЫЕ КЛЮЧИ В ПУБЛИЧНЫЙ РЕПОЗИТОРИЙ!",
+  "setup_instructions": {
+    "step_1": "Создайте сервисный аккаунт в Yandex Cloud",
+    "step_2": "yc iam service-account create --name github-actions-sa",
+    "step_3": "Назначьте необходимые роли",
+    "step_4": "yc resource-manager folder add-access-binding <folder-id> --role container-registry.images.pusher --subject serviceAccount:<sa-id>",
+    "step_5": "Создайте ключ для сервисного аккаунта",
+    "step_6": "yc iam key create --service-account-name github-actions-sa --output github-actions-key.json",
+    "step_7": "Добавьте содержимое ключа в GitHub Secrets как YC_KEY"
+  },
+  "required_roles": [
+    "container-registry.images.pusher",
+    "container-registry.images.puller", 
+    "k8s.editor",
+    "compute.admin"
+  ],
+  "github_secrets": {
+    "YC_KEY": "Содержимое файла github-actions-key.json",
+    "YC_REGISTRY_ID": "ID Container Registry из Terraform outputs",
+    "KUBECONFIG_STAGING": "Base64 encoded kubeconfig для staging",
+    "KUBECONFIG_PRODUCTION": "Base64 encoded kubeconfig для production"
+  },
+  "security_note": "Все секреты должны храниться в GitHub Secrets, никогда в коде!"
+}
